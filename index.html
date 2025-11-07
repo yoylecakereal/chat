@@ -13,12 +13,14 @@
     .brand{font-weight:700;letter-spacing:0.2px}
     .status{margin-left:auto;font-size:13px;color:var(--muted)}
     .main{flex:1;display:flex;flex-direction:column;padding:14px;gap:8px;overflow:hidden}
-    .messages{flex:1;overflow:auto;padding:8px;border-radius:8px;background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent);box-shadow:inset 0 1px 0 rgba(255,255,255,0.02)}
-    .msg{padding:8px 10px;border-radius:8px;margin-bottom:8px;max-width:82%;word-wrap:break-word}
+  /* make .messages a column flex container so items size to content width */
+  .messages{flex:1;display:flex;flex-direction:column;align-items:flex-start;overflow:auto;padding:8px;border-radius:8px;background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent);box-shadow:inset 0 1px 0 rgba(255,255,255,0.02)}
+  /* message bubbles now size to their contents up to max-width */
+  .msg{display:inline-block;padding:8px 10px;border-radius:8px;margin-bottom:8px;max-width:72%;word-wrap:break-word;width:auto}
     .meta{font-size:12px;color:var(--muted);margin-bottom:6px}
     .msg .body{font-size:14px;color:#e6eef8}
-    .msg.me{margin-left:auto;background:linear-gradient(90deg,#05201a,#063022);border:1px solid rgba(16,185,129,0.12)}
-    .msg.other{background:linear-gradient(90deg,#08182a,#0b2740);border:1px solid rgba(96,165,250,0.06)}
+  .msg.me{align-self:flex-end;background:linear-gradient(90deg,#05201a,#063022);border:1px solid rgba(16,185,129,0.12)}
+  .msg.other{align-self:flex-start;background:linear-gradient(90deg,#08182a,#0b2740);border:1px solid rgba(96,165,250,0.06)}
     .composer{display:flex;flex-direction:column;border-top:1px solid rgba(255,255,255,0.02);gap:4px}
     .typing{font-size:13px;color:var(--muted);height:1em;padding-left:12px;transition:opacity .2s}
   /* nicer typing bubble with animated dots */
@@ -35,7 +37,8 @@
   .embed iframe{width:100%;aspect-ratio:16/9;height:auto;border:0;display:block}
   /* prevent horizontal scrolling caused by wide images/embeds */
   .messages{overflow-x:hidden}
-  .msg .body img{max-width:100%;height:auto;display:block;margin-top:8px;border-radius:8px}
+  /* images render smaller and scale to their bubble (limited max width) */
+  .msg .body img{max-width:360px;width:100%;height:auto;display:block;margin-top:8px;border-radius:8px}
   /* custom scrollbar for messages */
   .messages::-webkit-scrollbar{width:10px;height:10px}
   .messages::-webkit-scrollbar-track{background:transparent;border-radius:10px}
@@ -46,8 +49,12 @@
   .image-preview{display:flex;align-items:flex-start;gap:8px;padding:8px 12px}
   .image-preview img{max-height:120px;border-radius:8px;box-shadow:0 4px 18px rgba(2,6,23,0.6)}
   .image-preview .remove{background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:14px;padding:6px}
+  .image-preview audio{max-width:320px}
   .upload-progress{width:100%;padding:0 12px 8px}
   .upload-progress .bar{height:8px;background:linear-gradient(90deg,var(--accent),#7dd3fc);border-radius:999px;transition:width .2s;width:0}
+  /* drag & drop overlay */
+  .drop-overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(6,8,15,0.6);backdrop-filter:blur(4px);color:#e6eef8;font-size:20px;z-index:60;pointer-events:none;opacity:0;transition:opacity .15s}
+  .drop-overlay.active{pointer-events:auto;opacity:1}
     .composer-row{display:flex;align-items:center;gap:8px;padding:10px}
     input[type="text"].input{flex:1;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.03);background:transparent;color:inherit;outline:none}
     button{background:var(--accent);border:none;padding:10px 14px;border-radius:8px;color:#071025;font-weight:600;cursor:pointer}
@@ -67,6 +74,7 @@
 
     <div class="main">
       <div class="messages" id="messages"></div>
+      <div id="dropOverlay" class="drop-overlay">Drop images here to attach</div>
 
       <div class="composer">
         <div class="typing" id="typingArea"></div>
@@ -78,6 +86,8 @@
         <div class="composer-row">
           <input id="inputMessage" class="input" type="text" placeholder="Type a message..." autocomplete="off" />
           <input id="fileImage" type="file" accept="image/*" style="display:none" />
+          <input id="fileAudio" type="file" accept="audio/*" style="display:none" />
+          <button id="btnAudio" type="button">🎵</button>
           <button id="btnImage" type="button">📷</button>
           <button id="btnSend">Send</button>
         </div>
@@ -99,10 +109,13 @@
   const inputMessage = document.getElementById('inputMessage');
   const btnSend = document.getElementById('btnSend');
   const fileImage = document.getElementById('fileImage');
+  const fileAudio = document.getElementById('fileAudio');
   const btnImage = document.getElementById('btnImage');
+  const btnAudio = document.getElementById('btnAudio');
   const imagePreview = document.getElementById('imagePreview');
   const uploadProgress = document.getElementById('uploadProgress');
   const uploadBar = uploadProgress && uploadProgress.querySelector('.bar');
+  const dropOverlay = document.getElementById('dropOverlay');
 
   // Replace this placeholder with your imgbb API key (you'll add it manually)
   const IMGBB_API_KEY = 'f014562f3e69dc9e97a2a1c812f54083';
@@ -110,6 +123,9 @@
   // Pending image state when a user pastes or selects an image
   let pendingImageDataUrl = null; // data:... string used for preview and upload
   let pendingImageFile = null; // File object (optional)
+  let pendingAudioFile = null;
+  let previewObjectUrl = null;
+  let currentUploadXhr = null; // allow canceling / tracking
 
     let ws, username, connected=false;
     const typingUsers = new Map(); // {name: timeoutId}
@@ -145,6 +161,10 @@
     // rudimentary image URL detection by extension
     function isImageUrl(url){
       try{ const u = new URL(url); return /\.(jpe?g|png|gif|webp|avif|bmp)$/i.test(u.pathname); }catch(e){return false}
+    }
+
+    function isAudioUrl(url){
+      try{ const u = new URL(url); return /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(u.pathname); }catch(e){return false}
     }
 
     // Convert plain text into DOM nodes: links become anchors, YouTube links become embedded iframes.
@@ -190,6 +210,11 @@
           img.src = normalized;
           a.appendChild(img);
           frag.appendChild(a);
+        } else if(isAudioUrl(normalized)){
+          // show audio inline
+          const div = document.createElement('div');
+          const audio = document.createElement('audio'); audio.controls = true; audio.src = normalized; audio.style.maxWidth='320px';
+          div.appendChild(audio); frag.appendChild(div);
         } else {
           const a = document.createElement('a');
           a.href = normalized;
@@ -235,7 +260,7 @@
       img.alt = 'preview';
       const rm = document.createElement('button');
       rm.className = 'remove';
-      rm.title = 'Remove image';
+      rm.title = 'Remove media';
       rm.textContent = '✖';
       rm.addEventListener('click', ()=>{ clearImagePreview(); });
       imagePreview.appendChild(img);
@@ -246,7 +271,10 @@
     function clearImagePreview(){
       pendingImageDataUrl = null;
       pendingImageFile = null;
+      pendingAudioFile = null;
+      if(previewObjectUrl){ try{ URL.revokeObjectURL(previewObjectUrl); }catch(e){} previewObjectUrl = null; }
       try{ fileImage.value = ''; }catch(e){}
+      try{ fileAudio.value = ''; }catch(e){}
       imagePreview.innerHTML = '';
       imagePreview.style.display = 'none';
     }
@@ -273,6 +301,7 @@
           // show progress UI
           if(uploadProgress && uploadBar){ uploadProgress.style.display='block'; uploadBar.style.width='0%'; }
           const xhr = new XMLHttpRequest();
+          currentUploadXhr = xhr;
           xhr.open('POST','https://api.imgbb.com/1/upload');
           xhr.upload.onprogress = function(ev){
             if(ev.lengthComputable && uploadBar){
@@ -284,16 +313,92 @@
             try{
               const j = JSON.parse(xhr.responseText);
               if(xhr.status>=200 && xhr.status<300 && j && j.success){
+                currentUploadXhr = null;
                 resolve(j.data.display_url || j.data.url);
               } else {
+                currentUploadXhr = null;
                 reject(new Error((j && j.error && j.error.message) ? j.error.message : 'upload failed'));
               }
             }catch(err){ reject(err); }
           };
           xhr.onerror = function(){ reject(new Error('Network error during upload')); };
-          xhr.onloadend = function(){ if(uploadProgress && uploadBar){ uploadBar.style.width='100%'; setTimeout(()=>{ if(uploadProgress) uploadProgress.style.display='none'; if(uploadBar) uploadBar.style.width='0%'; },600); } };
+          xhr.onloadend = function(){ if(uploadProgress && uploadBar){ uploadBar.style.width='100%'; setTimeout(()=>{ if(uploadProgress) uploadProgress.style.display='none'; if(uploadBar) uploadBar.style.width='0%'; },600); } currentUploadXhr = null; };
           xhr.send(form);
         }catch(err){ if(uploadProgress) uploadProgress.style.display='none'; reject(err); }
+      });
+    }
+
+    // Cancel current upload (if any)
+    function cancelCurrentUpload(){ if(currentUploadXhr){ try{ currentUploadXhr.abort(); }catch(e){} currentUploadXhr = null; if(uploadProgress) uploadProgress.style.display='none'; } }
+
+    // Resize image dataURL to a maximum dimension (keeping aspect ratio).
+    function resizeDataUrl(dataUrl, maxDim){
+      return new Promise((resolve,reject)=>{
+        const img = new Image();
+        img.onload = function(){
+          let w = img.naturalWidth, h = img.naturalHeight;
+          if(w <= maxDim && h <= maxDim) return resolve(dataUrl);
+          const ratio = w/h;
+          if(w > h){ w = maxDim; h = Math.round(maxDim/ratio); } else { h = maxDim; w = Math.round(maxDim*ratio); }
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img,0,0,w,h);
+          // use jpeg to reduce size; keep quality 0.85
+          try{ const out = canvas.toDataURL('image/jpeg',0.85); resolve(out); }catch(e){ try{ resolve(canvas.toDataURL()); }catch(ex){ reject(ex); } }
+        };
+        img.onerror = reject;
+        img.src = dataUrl;
+      });
+    }
+
+    // upload audio file to a simple file host (file.io) - returns URL
+    function uploadAudioToFile(file){
+      return new Promise((resolve,reject)=>{
+        if(!file) return reject(new Error('no file'));
+        try{
+          if(uploadProgress && uploadBar){ uploadProgress.style.display='block'; uploadBar.style.width='0%'; }
+          const xhr = new XMLHttpRequest();
+          currentUploadXhr = xhr;
+          const form = new FormData();
+          form.append('file', file);
+          // file.io endpoint
+          xhr.open('POST','https://file.io/?expires=14d');
+          xhr.upload.onprogress = function(ev){ if(ev.lengthComputable && uploadBar){ const pct = Math.round((ev.loaded/ev.total)*100); uploadBar.style.width = pct + '%'; } };
+          xhr.onload = function(){
+            try{
+              const j = JSON.parse(xhr.responseText);
+              if(xhr.status>=200 && xhr.status<300 && j && j.success && j.link){ currentUploadXhr = null; resolve(j.link); }
+              else { currentUploadXhr = null; reject(new Error('upload failed')); }
+            }catch(err){ currentUploadXhr = null; reject(err); }
+          };
+          xhr.onerror = function(){ currentUploadXhr = null; reject(new Error('Network error during upload')); };
+          xhr.onloadend = function(){ if(uploadProgress && uploadBar){ uploadBar.style.width='100%'; setTimeout(()=>{ if(uploadProgress) uploadProgress.style.display='none'; if(uploadBar) uploadBar.style.width='0%'; },600); } currentUploadXhr = null; };
+          xhr.send(form);
+        }catch(err){ if(uploadProgress) uploadProgress.style.display='none'; reject(err); }
+      });
+    }
+
+    // Resize File -> dataURL
+    async function resizeFileToDataUrl(file, maxDim){
+      const dataUrl = await dataURLFromFile(file);
+      return resizeDataUrl(dataUrl, maxDim);
+    }
+
+    // Ensure websocket is connected; try to connect and wait up to timeoutMs
+    function ensureConnected(timeoutMs = 5000){
+      return new Promise((resolve,reject)=>{
+        if(ws && ws.readyState === WebSocket.OPEN) return resolve(true);
+        let settled = false;
+        const onOpen = ()=>{ if(settled) return; settled = true; resolve(true); };
+        const onClose = ()=>{ /* keep waiting until timeout */ };
+        const timer = setTimeout(()=>{ if(settled) return; settled = true; try{ ws && ws.removeEventListener('open', onOpen); ws && ws.removeEventListener('close', onClose); }catch(e){} reject(new Error('connect timeout')); }, timeoutMs);
+        try{
+          if(!ws || ws.readyState === WebSocket.CLOSED){ connect(); }
+          if(ws.readyState === WebSocket.OPEN){ clearTimeout(timer); settled = true; resolve(true); return; }
+          ws.addEventListener('open', onOpen);
+          ws.addEventListener('close', onClose);
+        }catch(err){ clearTimeout(timer); reject(err); }
       });
     }
 
@@ -393,9 +498,17 @@
             const file = it.getAsFile();
             if(file){
               pendingImageFile = file;
-              const dataUrl = await dataURLFromFile(file);
-              pendingImageDataUrl = dataUrl;
-              renderImagePreview(dataUrl);
+              // resize pasted image to a reasonable max dimension
+              try{
+                const resized = await resizeFileToDataUrl(file, 1024);
+                pendingImageDataUrl = resized;
+                pendingImageFile = null; // use dataUrl for upload
+                renderImagePreview(resized);
+              }catch(e){
+                const dataUrl = await dataURLFromFile(file);
+                pendingImageDataUrl = dataUrl;
+                renderImagePreview(dataUrl);
+              }
               break;
             }
           }
@@ -403,37 +516,116 @@
       }catch(err){ console.warn('paste image failed',err); }
     });
 
-    // file selection via button
-    btnImage.addEventListener('click',()=> fileImage.click());
+  // file selection via button
+  btnImage.addEventListener('click',()=> fileImage.click());
     fileImage.addEventListener('change', async ()=>{
       const f = fileImage.files && fileImage.files[0];
       if(!f) return;
-      pendingImageFile = f;
-      try{ pendingImageDataUrl = await dataURLFromFile(f); renderImagePreview(pendingImageDataUrl); }catch(e){ console.warn(e); }
+      // resize selected file before preview/upload
+      try{
+        const resized = await resizeFileToDataUrl(f, 1024);
+        pendingImageDataUrl = resized;
+        pendingImageFile = null; // clear original to avoid double work
+        renderImagePreview(resized);
+      }catch(e){
+        pendingImageFile = f;
+        try{ pendingImageDataUrl = await dataURLFromFile(f); renderImagePreview(pendingImageDataUrl); }catch(ex){ console.warn(ex); }
+      }
     });
+    // audio file selected
+    fileAudio.addEventListener('change', async ()=>{
+      const f = fileAudio.files && fileAudio.files[0];
+      if(!f) return;
+      if(!f.type || f.type.indexOf('audio')!==0) return;
+      pendingAudioFile = f;
+      // preview audio via object URL
+      imagePreview.innerHTML = '';
+      const audio = document.createElement('audio');
+      audio.controls = true;
+      if(previewObjectUrl){ try{ URL.revokeObjectURL(previewObjectUrl); }catch(e){} previewObjectUrl = null; }
+      previewObjectUrl = URL.createObjectURL(f);
+      audio.src = previewObjectUrl;
+      const rm = document.createElement('button'); rm.className='remove'; rm.textContent='✖'; rm.addEventListener('click',()=>{ clearImagePreview(); });
+      imagePreview.appendChild(audio); imagePreview.appendChild(rm); imagePreview.style.display='flex';
+    });
+  // audio button
+  btnAudio.addEventListener('click', ()=> fileAudio.click());
+
+    // drag & drop handling (document-level)
+    function showDropOverlay(show){ if(dropOverlay) dropOverlay.classList.toggle('active', !!show); }
+    document.addEventListener('dragenter',(e)=>{ e.preventDefault(); showDropOverlay(true); },{passive:false});
+    document.addEventListener('dragover',(e)=>{ e.preventDefault(); showDropOverlay(true); },{passive:false});
+    document.addEventListener('dragleave',(e)=>{ e.preventDefault(); /* only hide when leaving window */ if(e.relatedTarget==null) showDropOverlay(false); },{passive:false});
+    document.addEventListener('drop', async (e)=>{
+      e.preventDefault(); showDropOverlay(false);
+      const files = (e.dataTransfer && e.dataTransfer.files) || [];
+      if(!files || files.length===0) return;
+      // try to find an image first
+      let handled = false;
+      for(const f of files){
+        if(f.type && f.type.indexOf('image')===0){
+          try{
+            const resized = await resizeFileToDataUrl(f, 1024);
+            pendingImageDataUrl = resized; pendingImageFile = null; renderImagePreview(resized);
+          }catch(err){
+            try{ pendingImageFile = f; pendingImageDataUrl = await dataURLFromFile(f); renderImagePreview(pendingImageDataUrl); }catch(e){console.warn(e);} 
+          }
+          handled = true; break;
+        }
+      }
+      if(handled) return;
+      // otherwise look for audio
+      for(const f of files){
+        if(f.type && f.type.indexOf('audio')===0){
+          pendingAudioFile = f;
+          imagePreview.innerHTML = '';
+          const audio = document.createElement('audio'); audio.controls=true; if(previewObjectUrl){ try{ URL.revokeObjectURL(previewObjectUrl); }catch(e){} previewObjectUrl=null;} previewObjectUrl = URL.createObjectURL(f); audio.src = previewObjectUrl;
+          const rm = document.createElement('button'); rm.className='remove'; rm.textContent='✖'; rm.addEventListener('click',()=>{ clearImagePreview(); });
+          imagePreview.appendChild(audio); imagePreview.appendChild(rm); imagePreview.style.display='flex';
+          break;
+        }
+      }
+    },{passive:false});
 
     btnSend.addEventListener('click', async ()=>{
       const text = inputMessage.value.trim();
       const hasImage = !!pendingImageDataUrl || !!pendingImageFile;
-      if(!text && !hasImage) return;
+      const hasAudio = !!pendingAudioFile;
+      if(!text && !hasImage && !hasAudio) return;
       btnSend.disabled = true;
       btnImage.disabled = true;
+      btnAudio.disabled = true;
       try{
         let uploadedUrl = null;
         if(hasImage){
-          const dataUrl = pendingImageDataUrl || (pendingImageFile ? await dataURLFromFile(pendingImageFile) : null);
+          // get resized data url if we have a file or dataUrl (pendingImageDataUrl already may be resized)
+          const dataUrl = pendingImageDataUrl || (pendingImageFile ? await resizeFileToDataUrl(pendingImageFile, 1024) : null);
           if(dataUrl){
             uploadedUrl = await uploadImageToImgbb(dataUrl);
           }
+        } else if(hasAudio){
+          // upload audio file
+          uploadedUrl = await uploadAudioToFile(pendingAudioFile);
         }
-        // compose message: include text and image url if both present
+        // compose message: include text and media url if both present
         const payload = text && uploadedUrl ? text + '\n' + uploadedUrl : (uploadedUrl || text);
-        if(payload) sendChat(payload);
+        if(payload){
+          try{
+            // attempt reconnect if needed
+            if(!ws || ws.readyState !== WebSocket.OPEN){
+              try{ await ensureConnected(5000); }catch(e){ /* couldn't reconnect in time */ }
+            }
+            sendChat(payload);
+          }catch(e){
+            // fallback: show locally
+            addMessage({from:username,body:payload,me:true});
+          }
+        }
         inputMessage.value='';
         clearImagePreview();
       }catch(err){
-        alert('Failed to upload image: '+ (err && err.message ? err.message : String(err)));
-      }finally{ btnSend.disabled = false; btnImage.disabled = false; if(uploadProgress) uploadProgress.style.display='none'; }
+        alert('Failed to upload media: '+ (err && err.message ? err.message : String(err)));
+      }finally{ btnSend.disabled = false; btnImage.disabled = false; btnAudio.disabled = false; if(uploadProgress) uploadProgress.style.display='none'; }
     });
     inputMessage.addEventListener('keydown',e=>{
       if(e.key==='Enter'){e.preventDefault();btnSend.click();}
